@@ -1,100 +1,119 @@
-;; NFT Art Marketplace Contract
-;; Supports digital art NFT minting, trading, and royalty mechanisms
+;; NFT Marketplace Contract
+;; Supports NFT minting, trading, and royalty mechanisms
 
 ;; Constants and Error Codes
-(define-constant MARKETPLACE-ADMINISTRATOR tx-sender)
-(define-constant MARKETPLACE-COMMISSION-RATE u5)  ;; 5% marketplace commission
+(define-constant CONTRACT-OWNER tx-sender)
+(define-constant MARKET-FEE-RATE u5)  ;; 5% marketplace fee
 
 ;; Error codes
-(define-constant ERR-UNAUTHORIZED-ACTION (err u1))
-(define-constant ERR-INSUFFICIENT-TRADER-BALANCE (err u2))
-(define-constant ERR-INVALID-CREATOR-ROYALTY (err u3))
-(define-constant ERR-ARTWORK-NOT-FOUND (err u4))
-(define-constant ERR-INVALID-ARTWORK-IDENTIFIER (err u5))
-(define-constant ERR-INVALID-LISTING-PRICE (err u6))
+(define-constant ERR-NOT-AUTHORIZED (err u1))
+(define-constant ERR-INSUFFICIENT-BALANCE (err u2))
+(define-constant ERR-INVALID-ROYALTY (err u3))
+(define-constant ERR-NFT-NOT-FOUND (err u4))
+(define-constant ERR-INVALID-NFT-ID (err u5))
+(define-constant ERR-INVALID-PRICE (err u6))
+(define-constant ERR-ALREADY-LISTED (err u7))
 
 ;; NFT Definition
-(define-non-fungible-token digital-art-token (string-ascii 100))
+(define-non-fungible-token marketplace-nft (string-ascii 100))
 
 ;; Royalty tracking map
-(define-map artwork-royalty-details 
-  { artwork-id: (string-ascii 100) }
+(define-map nft-royalties 
+  { nft-id: (string-ascii 100) }
   {
-    original-creator: principal,
-    creator-royalty-percentage: uint
+    creator: principal,
+    royalty-rate: uint
   }
 )
 
-;; Artwork listing map
-(define-map artwork-market-listings
-  { artwork-id: (string-ascii 100) }
+;; Market listing map
+(define-map market-listings
+  { nft-id: (string-ascii 100) }
   {
-    sale-price: uint,
-    artwork-seller: principal,
-    is-currently-listed: bool
+    price: uint,
+    seller: principal,
+    listed: bool
   }
 )
 
-;; Mint a new digital art NFT with royalty settings
-(define-public (create-digital-art-token 
-  (artwork-id (string-ascii 100)) 
-  (artwork-metadata (string-ascii 256))
-  (creator-royalty-percentage uint)
+;; Helper function to validate NFT ID
+(define-private (is-valid-nft-id (nft-id (string-ascii 100)))
+  (and 
+    (> (len nft-id) u0)
+    (<= (len nft-id) u100)
+  )
+)
+
+;; Helper function to validate ownership
+(define-private (is-owner (nft-id (string-ascii 100)))
+  (match (nft-get-owner? marketplace-nft nft-id)
+    owner (is-eq tx-sender owner)
+    false
+  )
+)
+
+;; Mint a new NFT with royalty settings
+(define-public (mint-nft 
+  (nft-id (string-ascii 100)) 
+  (metadata (string-ascii 256))
+  (royalty-rate uint)
 )
   (begin
-    ;; Validate artwork identifier length and non-emptiness
-    (asserts! (and 
-      (> (len artwork-id) u0) 
-      (<= (len artwork-id) u100)
-    ) ERR-INVALID-ARTWORK-IDENTIFIER)
+    ;; Validate NFT ID length
+    (asserts! (is-valid-nft-id nft-id) ERR-INVALID-NFT-ID)
     
-    ;; Validate creator royalty percentage (max 20%)
-    (asserts! (<= creator-royalty-percentage u20) ERR-INVALID-CREATOR-ROYALTY)
+    ;; Validate royalty rate (max 20%)
+    (asserts! (<= royalty-rate u20) ERR-INVALID-ROYALTY)
     
-    ;; Mint the digital art token
-    (try! (nft-mint? digital-art-token artwork-id tx-sender))
+    ;; Mint the NFT
+    (try! (nft-mint? marketplace-nft nft-id tx-sender))
     
-    ;; Store royalty information
-    (map-set artwork-royalty-details 
-      { artwork-id: artwork-id }
+    ;; Store royalty info
+    (map-set nft-royalties 
+      { nft-id: nft-id }
       {
-        original-creator: tx-sender,
-        creator-royalty-percentage: creator-royalty-percentage
+        creator: tx-sender,
+        royalty-rate: royalty-rate
       }
     )
     
-    (ok artwork-id)
+    (ok nft-id)
   )
 )
 
-;; List a digital art NFT for sale
-(define-public (list-artwork-for-sale 
-  (artwork-id (string-ascii 100))
-  (sale-price uint)
+;; List NFT for sale
+(define-public (list-nft 
+  (nft-id (string-ascii 100))
+  (price uint)
 )
   (let 
     (
-      (artwork-owner (unwrap! (nft-get-owner? digital-art-token artwork-id) ERR-ARTWORK-NOT-FOUND))
+      (owner (unwrap! (nft-get-owner? marketplace-nft nft-id) ERR-NFT-NOT-FOUND))
+      (current-listing (map-get? market-listings { nft-id: nft-id }))
     )
-    ;; Validate artwork identifier length
-    (asserts! (and 
-      (> (len artwork-id) u0) 
-      (<= (len artwork-id) u100)
-    ) ERR-INVALID-ARTWORK-IDENTIFIER)
+    ;; Validate NFT ID and ownership
+    (asserts! (is-valid-nft-id nft-id) ERR-INVALID-NFT-ID)
+    (asserts! (is-owner nft-id) ERR-NOT-AUTHORIZED)
     
-    ;; Validate sale price (must be positive)
-    (asserts! (> sale-price u0) ERR-INVALID-LISTING-PRICE)
+    ;; Validate price
+    (asserts! (> price u0) ERR-INVALID-PRICE)
     
-    ;; Only artwork owner can list
-    (asserts! (is-eq artwork-owner tx-sender) ERR-UNAUTHORIZED-ACTION)
+    ;; Verify ownership
+    (asserts! (is-eq owner tx-sender) ERR-NOT-AUTHORIZED)
     
-    ;; Set listing details
-    (map-set artwork-market-listings 
-      { artwork-id: artwork-id }
+    ;; Check if not already listed
+    (asserts! (or 
+      (is-none current-listing)
+      (not (get listed (unwrap-panic current-listing)))
+    ) ERR-ALREADY-LISTED)
+    
+    ;; Create listing
+    (map-set market-listings 
+      { nft-id: nft-id }
       {
-        sale-price: sale-price,
-        artwork-seller: tx-sender,
-        is-currently-listed: true
+        price: price,
+        seller: tx-sender,
+        listed: true
       }
     )
     
@@ -102,61 +121,29 @@
   )
 )
 
-;; Purchase a digital art NFT
-(define-public (purchase-artwork 
-  (artwork-id (string-ascii 100))
+;; Remove NFT listing
+(define-public (delist-nft 
+  (nft-id (string-ascii 100))
 )
   (let 
     (
-      ;; Retrieve listing details
-      (artwork-listing (unwrap! 
-        (map-get? artwork-market-listings { artwork-id: artwork-id }) 
-        ERR-ARTWORK-NOT-FOUND
-      ))
-      
-      ;; Current owner of the artwork token
-      (current-artwork-owner (unwrap! 
-        (nft-get-owner? digital-art-token artwork-id) 
-        ERR-ARTWORK-NOT-FOUND
-      ))
-      
-      ;; Royalty details
-      (artwork-royalty-info (unwrap! 
-        (map-get? artwork-royalty-details { artwork-id: artwork-id }) 
-        ERR-ARTWORK-NOT-FOUND
-      ))
-      
-      ;; Calculate transaction fees
-      (total-sale-price (get sale-price artwork-listing))
-      (marketplace-commission (/ (* total-sale-price MARKETPLACE-COMMISSION-RATE) u100))
-      (creator-royalty-amount (/ (* total-sale-price (get creator-royalty-percentage artwork-royalty-info)) u100))
-      (seller-proceeds (- (- total-sale-price marketplace-commission) creator-royalty-amount))
+      (owner (unwrap! (nft-get-owner? marketplace-nft nft-id) ERR-NFT-NOT-FOUND))
+      (listing (unwrap! (map-get? market-listings { nft-id: nft-id }) ERR-NFT-NOT-FOUND))
     )
-    ;; Ensure artwork is currently listed for sale
-    (asserts! (get is-currently-listed artwork-listing) ERR-INSUFFICIENT-TRADER-BALANCE)
+    ;; Validate NFT ID and ownership
+    (asserts! (is-valid-nft-id nft-id) ERR-INVALID-NFT-ID)
+    (asserts! (is-owner nft-id) ERR-NOT-AUTHORIZED)
     
-    ;; Verify buyer has sufficient funds
-    (asserts! (>= (stx-get-balance tx-sender) total-sale-price) ERR-INSUFFICIENT-TRADER-BALANCE)
+    ;; Verify listing status
+    (asserts! (get listed listing) ERR-NOT-AUTHORIZED)
     
-    ;; Transfer marketplace commission
-    (try! (stx-transfer? marketplace-commission tx-sender MARKETPLACE-ADMINISTRATOR))
-    
-    ;; Transfer royalty to original creator
-    (try! (stx-transfer? creator-royalty-amount tx-sender (get original-creator artwork-royalty-info)))
-    
-    ;; Transfer remaining amount to artwork seller
-    (try! (stx-transfer? seller-proceeds tx-sender current-artwork-owner))
-    
-    ;; Transfer artwork token ownership
-    (try! (nft-transfer? digital-art-token artwork-id current-artwork-owner tx-sender))
-    
-    ;; Update artwork listing status
-    (map-set artwork-market-listings 
-      { artwork-id: artwork-id }
+    ;; Remove listing
+    (map-set market-listings 
+      { nft-id: nft-id }
       {
-        sale-price: u0,
-        artwork-seller: tx-sender,
-        is-currently-listed: false
+        price: u0,
+        seller: tx-sender,
+        listed: false
       }
     )
     
@@ -164,11 +151,70 @@
   )
 )
 
-;; Retrieve artwork token information
-(define-read-only (get-artwork-token-details (artwork-id (string-ascii 100)))
-  {
-    owner: (nft-get-owner? digital-art-token artwork-id),
-    listing: (map-get? artwork-market-listings { artwork-id: artwork-id }),
-    royalties: (map-get? artwork-royalty-details { artwork-id: artwork-id })
-  }
+;; Purchase an NFT
+(define-public (buy-nft 
+  (nft-id (string-ascii 100))
+)
+  (let 
+    (
+      ;; Validate NFT ID
+      (valid-id (asserts! (is-valid-nft-id nft-id) ERR-INVALID-NFT-ID))
+      
+      ;; Get listing details
+      (listing (unwrap! (map-get? market-listings { nft-id: nft-id }) ERR-NFT-NOT-FOUND))
+      
+      ;; Get current owner
+      (current-owner (unwrap! (nft-get-owner? marketplace-nft nft-id) ERR-NFT-NOT-FOUND))
+      
+      ;; Get royalty details
+      (royalty-info (unwrap! (map-get? nft-royalties { nft-id: nft-id }) ERR-NFT-NOT-FOUND))
+      
+      ;; Calculate fees
+      (sale-price (get price listing))
+      (market-fee (/ (* sale-price MARKET-FEE-RATE) u100))
+      (royalty-amount (/ (* sale-price (get royalty-rate royalty-info)) u100))
+      (seller-amount (- (- sale-price market-fee) royalty-amount))
+    )
+    ;; Verify listing status
+    (asserts! (get listed listing) ERR-INSUFFICIENT-BALANCE)
+    
+    ;; Check buyer balance
+    (asserts! (>= (stx-get-balance tx-sender) sale-price) ERR-INSUFFICIENT-BALANCE)
+    
+    ;; Transfer market fee
+    (try! (stx-transfer? market-fee tx-sender CONTRACT-OWNER))
+    
+    ;; Transfer royalty
+    (try! (stx-transfer? royalty-amount tx-sender (get creator royalty-info)))
+    
+    ;; Transfer payment to seller
+    (try! (stx-transfer? seller-amount tx-sender current-owner))
+    
+    ;; Transfer NFT ownership
+    (try! (nft-transfer? marketplace-nft nft-id current-owner tx-sender))
+    
+    ;; Update listing
+    (map-set market-listings 
+      { nft-id: nft-id }
+      {
+        price: u0,
+        seller: tx-sender,
+        listed: false
+      }
+    )
+    
+    (ok true)
+  )
+)
+
+;; Get NFT information
+(define-read-only (get-nft-info (nft-id (string-ascii 100)))
+  (begin
+    (asserts! (is-valid-nft-id nft-id) ERR-INVALID-NFT-ID)
+    (ok {
+      owner: (nft-get-owner? marketplace-nft nft-id),
+      listing: (map-get? market-listings { nft-id: nft-id }),
+      royalties: (map-get? nft-royalties { nft-id: nft-id })
+    })
+  )
 )
